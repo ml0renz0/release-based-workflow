@@ -53,7 +53,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Create a release-v1.0 branch.
+      # Create a develop branch.
       - name: Initialize repository
         run: ./.github/script/initialize-repository.sh
         env:
@@ -66,3 +66,4 @@ jobs:
           token: ${{ secrets.GITHUB_TOKEN }}
           from_step: 0
           to_step: 1
+          branch_name: develop

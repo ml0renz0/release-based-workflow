@@ -1,0 +1,26 @@
+name: Validación - Patrón de nombre de ramas permitidos para features
+
+on:
+  push:
+    # queremos comprobar todo lo que NO sea main ni develop
+    branches-ignore:
+      - main
+      - develop
+
+permissions:
+  contents: read
+
+jobs:
+  lint-branch-name:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comprobar patrón de nombre de rama
+        run: |
+          BRANCH="${GITHUB_REF_NAME}"
+
+          if [[ ! "$BRANCH" =~ ^(feature/|fix/|refactor/|docs/|update/).+ ]]; then
+            cat << EOM
+          ::error::❌  La rama '$BRANCH' no cumple el patrón: feature/*, fix/*, refactor/*, docs/* o update/*
+          EOM
+            exit 1
+          fi

@@ -1,0 +1,24 @@
+name: Validación - Patrón de nombre de ramas permitidos para PR
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  validar:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validar nombre y destino de rama
+        run: |
+          if [[ ! "${{ github.head_ref }}" =~ ^(feature/|fix/|refactor/|docs/|update/) ]] && [[ "${{ github.base_ref }}" == "develop" ]]; then
+            echo '::error::Las ramas de desarrollo deben incluir uno de los siguientes prefijos en su nombre: feature/*, fix/*, refactor/*, docs/*, update/*'
+            exit 1
+          fi
+          if [[ "${{ github.head_ref }}" =~ ^(feature/|fix/|refactor/|docs/|update/) ]] && [[ "${{ github.base_ref }}" != "develop" ]]; then
+            echo '::error::Las ramas de desarrollo deben abrirse contra la rama develop'
+            exit 1
+          fi
+          if [[ ! "${{ github.head_ref }}" =~ ^develop$ ]] && [[ "${{ github.base_ref }}" == "main" ]];  then
+            echo '::error::Sólo se permiten PRs a main desde la rama develop'
+            exit 1
+          fi

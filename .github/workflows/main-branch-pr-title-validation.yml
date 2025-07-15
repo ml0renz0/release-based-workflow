@@ -1,0 +1,71 @@
+name: Validación - Título de PR con destino rama main
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+    branches: [main]
+
+permissions:
+  pull-requests: write       # para comentar o marcar check como fallido
+
+jobs:
+  check-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Comprobar patrón del título de la PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { context, core, github } = require('@actions/github');
+
+            const pr    = context.payload.pull_request;
+            const title = pr.title.trim();
+
+            // -----------------------------------------------------------------
+            // SemVer completo:
+            //  major.minor.patch            ← obligatorio
+            //  -prerelease                  ← opcional
+            //  +build                       ← opcional
+            // -----------------------------------------------------------------
+            const semver =
+              '(\\d+\\.\\d+\\.\\d+' +           // major.minor.patch
+              '(?:-[0-9A-Za-z.-]+)?' +          // -prerelease
+              '(?:\\+[0-9A-Za-z.-]+)?' +        // +build
+              ')';
+
+            // Patrón final: [RELEASE] - <semver>#<semver>
+            const regex = new RegExp(`^\\[RELEASE\\]\\s*-\\s*${semver}#${semver}$`);
+
+            if (regex.test(title)) {
+              core.info(`✅ El título cumple el patrón: "${title}"`);
+            } else {
+              const msg = [
+                '🚫 **Título de release inválido**',
+                '',
+                'Formato requerido:',
+                '',
+                '`[RELEASE] - <old_version>#<new_version>`',
+                '',
+                '**Ejemplos válidos:**',
+                '- `[RELEASE] - 0.9.0#1.0.0`',
+                '- `[RELEASE] - 1.2.3-alpha.1#1.2.3`',
+                '- `[RELEASE] - 2.0.0#2.0.0+build.42`'
+              ].join('\n');
+
+              // Publicar comentario en el PR (opcional: se omitirá si no hay permisos)
+              try {
+                await github.rest.issues.createComment({
+                  owner: context.repo.owner,
+                  repo:  context.repo.repo,
+                  issue_number: pr.number,
+                  body: msg
+                });
+              } catch (_) {
+                /* ignorar si el token no permite comentar */
+              }
+
+              core.setFailed(
+                `❌ El título de la PR no cumple el patrón "[RELEASE] - <old_version>#<new_version>".\n` +
+                `Ejemplo válido: "[RELEASE] - 0.9.0#1.0.0"`,
+              )
+            }

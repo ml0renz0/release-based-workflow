@@ -6,18 +6,18 @@ echo "Set committer details"
 git config user.name github-actions[bot]
 git config user.email github-actions[bot]@users.noreply.github.com
 
-echo "Create release branch"
-RELEASE_BRANCH=release-v1.0
+echo "Create develop branch"
+DEVELOP_BRANCH=develop
 git checkout main
-git checkout -b $RELEASE_BRANCH
+git checkout -b $DEVELOP_BRANCH
 
-echo "Push release branch"
+echo "Push develop branch"
 git commit --allow-empty --message="Empty commit to initialize branch"
-git push --set-upstream origin $RELEASE_BRANCH
+git push --set-upstream origin $DEVELOP_BRANCH
 
 echo "Create feature branch"
 git checkout main
-FEATURE_BRANCH=update-text-colors
+FEATURE_BRANCH=feature/update-text-colors
 git checkout -b $FEATURE_BRANCH
 
 echo "Make changes to files"
