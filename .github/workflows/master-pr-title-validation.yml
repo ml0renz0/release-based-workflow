@@ -1,0 +1,44 @@
+name: "Check: Título de PR a master"
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  pull-requests: write
+
+jobs:
+  check-master-pr-title:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Skip when base is not master
+        if: github.base_ref != 'master'
+        run: echo "PR a ${GITHUB_BASE_REF}; check innecesario."
+
+      - name: Validar patrón del título
+        if: github.base_ref == 'master'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr    = context.payload.pull_request;
+            const title = pr.title.trim();
+            const ok = /^\[(RELEASE|HOTFIX)\]\s+.+$/i.test(title);
+            if (ok) { core.info(`✅ Título válido`); return; }
+
+            const msg = [
+              '🚫 **Título inválido**',
+              '',
+              'Usa uno de estos formatos:',
+              '- `[RELEASE] <mensaje>`',
+              '- `[HOTFIX] <mensaje>`'
+            ].join('\n');
+
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: pr.number,
+                body: msg
+              });
+            } catch {}
+            core.setFailed('Título de PR inválido.')

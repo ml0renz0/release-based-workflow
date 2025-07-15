@@ -1,0 +1,61 @@
+name: "Check: Nombre de ramas para features"
+
+on:
+  push:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read
+
+jobs:
+  check-commit-push-branch-name:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validar según evento
+        run: |
+          EVENT="${{ github.event_name }}"
+
+          # ----------------- PUSH -----------------
+          if [ "$EVENT" = "push" ]; then
+            BRANCH="${GITHUB_REF_NAME}"
+
+            # Exentas
+            if [[ "$BRANCH" =~ ^(master|develop|curso)$ ]]; then exit 0; fi
+            if [[ "$BRANCH" =~ ^(dependabot/|renovate/) ]]; then exit 0; fi
+            if [[ "$BRANCH" =~ ^ci/bump- ]]; then exit 0; fi
+
+            if [[ ! "$BRANCH" =~ ^(feature/|fix/|refactor/|docs/|update/|hotfix/|release/).+ ]]; then
+              echo "::error::❌ La rama '$BRANCH' no cumple el patrón permitido"
+              exit 1
+            fi
+            echo "✅ Nombre de rama válido (push)"
+            exit 0
+          fi
+
+          # --------------- PULL REQUEST ---------------
+          HEAD="${{ github.head_ref }}"
+          BASE="${{ github.base_ref }}"
+
+          # PR a develop
+          if [[ "$BASE" == "develop" ]]; then
+            if [[ "$HEAD" == "master" ]]; then exit 0; fi   # sync hotfix
+            if [[ ! "$HEAD" =~ ^(feature/|fix/|refactor/|docs/|update/|release/|ci/bump-) ]]; then
+              echo "::error::PRs a develop sólo desde feature/*, fix/*, refactor/*, docs/*, update/*, release/* o ci/bump-*"
+              exit 1
+            fi
+            echo "✅ PR válida (→ develop)"
+            exit 0
+          fi
+
+          # PR a master
+          if [[ "$BASE" == "master" ]]; then
+            if [[ "$HEAD" == "develop" ]];  then echo "✅ PR válida (develop → master)"; exit 0; fi
+            if [[ "$HEAD" =~ ^hotfix/ ]];   then echo "✅ PR válida (hotfix → master)";  exit 0; fi
+            if [[ "$HEAD" =~ ^release/ ]];  then echo "✅ PR válida (release → master)"; exit 0; fi
+            echo "::error::PRs a master sólo desde develop, hotfix/* o release/*"
+            exit 1
+          fi
+
+          # Resto de bases: OK
+          echo "ℹ️ PR contra $BASE → sin validación específica"

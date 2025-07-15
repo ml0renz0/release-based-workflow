@@ -1,0 +1,148 @@
+name: "Check: Subir versión y release de develop"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump-and-release-develop:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Gate / skip?
+        id: gate
+        run: |
+          if [[ "${{ github.base_ref }}" != "develop" \
+             || "${{ github.event.action }}" != "closed" \
+             || "${{ github.event.pull_request.merged }}" != "true" ]]; then
+            echo "skip=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Early success
+        if: steps.gate.outputs.skip == 'true'
+        run: echo "✅ No es una PR mergeada a develop. Nada que hacer."
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+        with: { fetch-depth: 0 }
+
+      - name: Configure git user
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Detect bump type
+        if: steps.gate.outputs.skip != 'true'
+        id: bump
+        run: |
+          HEAD_REF="${{ github.event.pull_request.head.ref }}"
+          case "$HEAD_REF" in
+            fix/*|docs/*|update/*)               TYPE=patch ;;
+            feature/*|refactor/*)                TYPE=minor ;;
+            release/*)                           TYPE=major ;;
+            *)  echo "::error::Tipo de rama desconocido ($HEAD_REF)"; exit 1 ;;
+          esac
+          echo "type=$TYPE" >> "$GITHUB_OUTPUT"
+
+      - name: Compute next version
+        if: steps.gate.outputs.skip != 'true'
+        id: ver
+        run: |
+          set -e
+          RAW="0.0.0"
+          [ -f VERSION ] && RAW=$(tr -d '\r' < VERSION | sed 's/^v//' | sed 's/-dev$//')
+          [[ "$RAW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || { echo "::error::VERSION inválido ($RAW)"; exit 1; }
+
+          IFS=. read -r MA MI PA <<<"$RAW"
+          case "${{ steps.bump.outputs.type }}" in
+            major) MA=$((MA+1)); MI=0; PA=0 ;;
+            minor) MI=$((MI+1)); PA=0       ;;
+            patch) PA=$((PA+1))             ;;
+          esac
+
+          BASE="v${MA}.${MI}.${PA}"    # VERSION (sin -dev)
+          DEV_TAG="${BASE}-dev"        # Tag para develop
+
+          git fetch --tags --quiet
+
+          # Flags de idempotencia
+          DO_COMMIT=1
+          DO_PR=1
+          DO_TAG=1
+          DO_RELEASE=1
+
+          # ¿El fichero VERSION ya dice BASE?
+          if [ -f VERSION ] && [ "$(tr -d '\r' < VERSION)" = "$BASE" ]; then
+            DO_COMMIT=0
+          fi
+
+          # ¿Existe la rama ci/bump-BASE?
+          if git show-ref --verify --quiet "refs/heads/ci/bump-${BASE}"; then
+            DO_COMMIT=0
+          fi
+
+          # ¿Existe el tag y/o la release?
+          if git show-ref --tags --verify --quiet "refs/tags/$DEV_TAG"; then
+            DO_TAG=0
+          fi
+          if gh release view "$DEV_TAG" >/dev/null 2>&1; then
+            DO_RELEASE=0
+          fi
+
+          echo "$BASE" > VERSION   # actualizamos siempre el fichero local para el resto de pasos
+          echo "base=$BASE"       >> "$GITHUB_OUTPUT"
+          echo "devtag=$DEV_TAG"  >> "$GITHUB_OUTPUT"
+          echo "do_commit=$DO_COMMIT"   >> "$GITHUB_OUTPUT"
+          echo "do_pr=$DO_PR"           >> "$GITHUB_OUTPUT"
+          echo "do_tag=$DO_TAG"         >> "$GITHUB_OUTPUT"
+          echo "do_release=$DO_RELEASE" >> "$GITHUB_OUTPUT"
+
+      - name: Create bump branch, commit and push
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_commit == '1'
+        env:
+          BASE: ${{ steps.ver.outputs.base }}
+        run: |
+          set -e
+          BR="ci/bump-${BASE}"
+          git switch -c "$BR"
+          git add VERSION
+          git commit -m "chore(version): bump to ${BASE}"
+          git push -u origin "$BR"
+
+      - name: Commit bump through PR
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_commit == '1'
+        uses: ./.github/actions/create-and-merge-pr
+        with:
+          token:  ${{ secrets.GITHUB_TOKEN }}
+          head:   ci/bump-${{ steps.ver.outputs.base }}
+          base:   develop
+          title:  "chore(version): bump to ${{ steps.ver.outputs.base }}"
+          body:   "Tipo: ${{ steps.bump.outputs.type }}"
+          method: squash
+          auto:   "true"
+
+      - name: Tag & prerelease
+        if: steps.gate.outputs.skip != 'true' && (steps.ver.outputs.do_tag == '1' || steps.ver.outputs.do_release == '1')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          DEV_TAG="${{ steps.ver.outputs.devtag }}"
+          git fetch origin develop --tags
+          if ! git show-ref --tags --verify --quiet "refs/tags/$DEV_TAG"; then
+            git tag "$DEV_TAG"
+            git push origin "$DEV_TAG"
+          fi
+          gh release view "$DEV_TAG" >/dev/null 2>&1 || \
+            gh release create "$DEV_TAG" --prerelease --title "$DEV_TAG" --notes "Auto pre-release (develop)"

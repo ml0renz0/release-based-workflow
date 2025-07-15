@@ -1,0 +1,105 @@
+name: "Check: Subir versión y release de master"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+jobs:
+  bump-and-release-master:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Gate / skip?
+        id: gate
+        run: |
+          if [[ "${{ github.base_ref }}" != "master" \
+             || "${{ github.event.action }}" != "closed" \
+             || "${{ github.event.pull_request.merged }}" != "true" ]]; then
+            echo "skip=true"  >> "$GITHUB_OUTPUT"
+          else
+            echo "skip=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: Early success
+        if: steps.gate.outputs.skip == 'true'
+        run: echo "✅ No es una PR mergeada a master. Nada que hacer."
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+        with: { fetch-depth: 0 }
+
+      - name: Determine source type
+        if: steps.gate.outputs.skip != 'true'
+        id: kind
+        run: |
+          REF="${{ github.event.pull_request.head.ref }}"
+          if [[ "$REF" == "develop" ]]; then echo "src=develop" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [[ "$REF" =~ ^release/ ]]; then echo "src=release" >> "$GITHUB_OUTPUT"; exit 0; fi
+          if [[ "$REF" =~ ^hotfix/  ]]; then echo "src=hotfix"  >> "$GITHUB_OUTPUT"; exit 0; fi
+          echo "::error::Origen no permitido ($REF)"; exit 1
+
+      - name: Compute final version
+        if: steps.gate.outputs.skip != 'true'
+        id: ver
+        run: |
+          RAW=$(tr -d '\r' < VERSION | sed 's/^v//')
+          if ! [[ "$RAW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION inválido: '$RAW'"
+            exit 1
+          fi
+          FINAL="v$RAW"
+
+          git fetch --tags --quiet
+
+          DO_TAG=1
+          DO_RELEASE=1
+          DO_SYNC=0
+
+          if git show-ref --tags --verify --quiet "refs/tags/$FINAL"; then
+            DO_TAG=0
+          fi
+          if gh release view "$FINAL" >/dev/null 2>&1; then
+            DO_RELEASE=0
+          fi
+
+          # Sync a develop sólo si viene de hotfix/release
+          [ "${{ steps.kind.outputs.src }}" != "develop" ] && DO_SYNC=1
+
+          echo "final=$FINAL"     >> $GITHUB_OUTPUT
+          echo "do_tag=$DO_TAG"   >> $GITHUB_OUTPUT
+          echo "do_rel=$DO_RELEASE" >> $GITHUB_OUTPUT
+          echo "do_sync=$DO_SYNC" >> $GITHUB_OUTPUT
+
+      - name: Tag & release
+        if: steps.gate.outputs.skip != 'true' && (steps.ver.outputs.do_tag == '1' || steps.ver.outputs.do_rel == '1')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          FINAL="${{ steps.ver.outputs.final }}"
+          if ! git show-ref --tags --verify --quiet "refs/tags/$FINAL"; then
+            git tag "$FINAL"
+            git push origin "$FINAL"
+          fi
+          gh release view "$FINAL" >/dev/null 2>&1 || \
+            gh release create "$FINAL" --title "$FINAL" --notes "Auto release from PR #${{ github.event.pull_request.number }}"
+
+      - name: Sync back to develop (hotfix/release)
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_sync == '1'
+        uses: ./.github/actions/create-and-merge-pr
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          head:  master
+          base:  develop
+          title: "[SYNC] master → develop (${{ steps.kind.outputs.src }})"
+          body:  "Sincronización automática tras release/hotfix"
+          method: squash
+          auto: "true"

@@ -1,0 +1,73 @@
+name: "Check: Prefijo de mensajes de commit"
+
+on:
+  push:
+  pull_request:
+    types: [opened, synchronize, reopened]
+
+permissions:
+  contents: read
+
+jobs:
+  check-commit-message-prefix:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Gate / calcular rango
+        id: gate
+        run: |
+          # Evento y rama/cabezas
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+            BRANCH="${{ github.head_ref }}"
+          else
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+            BRANCH="${GITHUB_REF_NAME}"
+          fi
+
+          echo "range=$RANGE"   >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
+          # Ramas exentas
+          if [[ "$BRANCH" =~ ^(master|develop|curso)$ ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT; exit 0
+          fi
+          if [[ "$BRANCH" =~ ^(dependabot/|renovate/) ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT; exit 0
+          fi
+          if [[ "$BRANCH" =~ ^ci/bump- ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT; exit 0
+          fi
+
+          echo "skip=false" >> $GITHUB_OUTPUT
+
+      - name: Early success
+        if: steps.gate.outputs.skip == 'true'
+        run: echo "✅ Rama exenta. Nada que validar."
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+        with: { fetch-depth: 0 }
+
+      - name: Lint commits
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          RANGE="${{ steps.gate.outputs.range }}"
+
+          ALLOWED='^(data|extract|transform|load|preprocesamiento|modelo|cicd|docs|fix|refactor|test|config|chore):\s'
+          EXCEPT='^(Merge |Revert "|dependabot|renovate/|chore\(version\): bump|ci: bump|chore\(release\):)'
+
+          FAIL=0
+  
+          while IFS= read -r msg; do
+          if [[ "$msg" =~ $EXCEPT ]]; then
+              echo "ℹ️  Exento: $msg"
+              continue
+          fi
+          if [[ ! "$msg" =~ $ALLOWED ]]; then
+              echo "::error::Mensaje inválido: \"$msg\""
+              FAIL=1
+          fi
+          done < <(git log --format='%s' "$RANGE")
+  
+          exit $FAIL

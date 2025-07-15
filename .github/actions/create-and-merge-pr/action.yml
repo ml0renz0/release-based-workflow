@@ -1,0 +1,74 @@
+name: "Open & merge PR"
+description: "Crea una PR head->base y la mergea."
+inputs:
+  token:
+    description: GITHUB_TOKEN o PAT con permisos repo
+    required: true
+  head:
+    description: Rama origen (HEAD)
+    required: true
+  base:
+    description: Rama destino (BASE)
+    required: true
+  title:
+    description: Título de la PR
+    required: true
+  body:
+    description: Cuerpo de la PR
+    required: false
+    default: ""
+  method:
+    description: "Método de merge: merge | squash | rebase"
+    required: false
+    default: squash
+  auto:
+    description: Use auto-merge?
+    required: false
+    default: "true"
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+      run: |
+        set -euo pipefail
+
+        HEAD="${{ inputs.head }}"
+        BASE="${{ inputs.base }}"
+        TITLE="${{ inputs.title }}"
+        BODY="${{ inputs.body }}"
+        METHOD="${{ inputs.method }}"
+        AUTO="${{ inputs.auto }}"
+
+        # 1. Crear/obtener la PR
+        PR=$(gh pr list --head "$HEAD" --base "$BASE" --json number -q '.[0].number')
+        if [ -z "$PR" ]; then
+          gh pr create --title "$TITLE" --body "$BODY" --head "$HEAD" --base "$BASE" --draft=false
+          PR=$(gh pr list --head "$HEAD" --base "$BASE" --json number -q '.[0].number')
+        fi
+
+        # 2. Publicar estados "success" para los checks requeridos (si no van a ejecutarse)
+        SHA=$(gh pr view "$PR" --json headRefOid -q .headRefOid)
+
+        for ctx in \
+          check-commit-message-prefix \
+          check-commit-push-branch-name \
+          pr-branch-validation \
+          check-master-pr-title \
+          bump-and-release-develop \
+          bump-and-release-master
+        do
+          gh api repos/$REPO/statuses/$SHA \
+            -f state=success \
+            -f context="$ctx" \
+            -f description="Skipped for ci/bump-* auto PR" >/dev/null
+        done
+
+        # 3. Merge (auto o inmediato)
+        if [ "$AUTO" = "true" ]; then
+          gh pr merge "$PR" --"$METHOD" --auto
+        else
+          gh pr merge "$PR" --"$METHOD" --admin
+        fi

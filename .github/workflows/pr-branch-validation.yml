@@ -1,0 +1,35 @@
+name: "Check: Nombre de ramas para PRs"
+
+on:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+jobs:
+  pr-branch-validation:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validar nombre y destino de rama
+        run: |
+          HEAD="${{ github.head_ref }}"
+          BASE="${{ github.base_ref }}"
+
+          # PR a develop
+          if [[ "$BASE" == "develop" ]]; then
+            if [[ "$HEAD" == "master" ]]; then exit 0; fi   # sync hotfix
+            if [[ ! "$HEAD" =~ ^(feature/|fix/|refactor/|docs/|update/|release/|ci/bump-) ]]; then
+              echo "::error::PRs a develop desde feature/*, fix/*, refactor/*, docs/*, update/*, release/* o ci/bump-*"
+              exit 1
+            fi
+            exit 0
+          fi
+
+          # PR a master
+          if [[ "$BASE" == "master" ]]; then
+            if [[ "$HEAD" == "develop" ]]; then exit 0; fi
+            if [[ "$HEAD" =~ ^hotfix/ ]];   then exit 0; fi
+            if [[ "$HEAD" =~ ^release/ ]];  then exit 0; fi
+            echo "::error::PRs a master sólo desde develop, hotfix/* o release/*"
+            exit 1
+          fi
+
+          echo "PR contra $BASE → sin validación"
