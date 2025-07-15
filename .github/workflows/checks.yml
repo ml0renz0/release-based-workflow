@@ -1,0 +1,168 @@
+name: "Checks: Ramas, prefijos y PRs"
+
+on:
+  push:
+  pull_request:
+    types: [opened, edited, reopened, synchronize]
+
+permissions:
+  contents: read          # para `git checkout`
+  pull-requests: write    # permite comentar y fallar checks de PR
+
+jobs:
+# ────────────────────────────────────────────────────────────────────────────────
+# 1. Validar nombre de rama  (push y PR)
+# ────────────────────────────────────────────────────────────────────────────────
+  branch-name:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Validar nombre de rama / destino
+        run: |
+          EVENT="${{ github.event_name }}"
+
+          # --- PUSH ----------------------------------------------------------------
+          if [ "$EVENT" = "push" ]; then
+            BRANCH="${GITHUB_REF_NAME}"
+
+            # Ramas exentas
+            if [[ "$BRANCH" =~ ^(master|develop|curso)$ \
+               || "$BRANCH" =~ ^(dependabot/|renovate/) \
+               || "$BRANCH" =~ ^ci/bump- ]]; then
+              echo "ℹ️  Push en rama exenta ($BRANCH)"; exit 0
+            fi
+
+            if [[ ! "$BRANCH" =~ ^(feature/|fix/|refactor/|docs/|update/|hotfix/|release/).+ ]]; then
+              echo "::error::❌ La rama '$BRANCH' no cumple el patrón permitido"
+              exit 1
+            fi
+            echo "✅ Nombre de rama válido (push)"
+            exit 0
+          fi
+
+          # --- PULL REQUEST --------------------------------------------------------
+          HEAD="${{ github.head_ref }}"
+          BASE="${{ github.base_ref }}"
+
+          # PR a develop
+          if [[ "$BASE" == "develop" ]]; then
+            # sync hotfix
+            if [[ "$HEAD" == "master" ]]; then
+              exit 0
+            fi
+            if [[ "$HEAD" =~ ^(feature/|fix/|refactor/|docs/|update/|release/|ci/bump-) ]]; then
+              echo "✅ PR válida (→ develop)"
+              exit 0
+            else
+              echo "::error::PRs a develop sólo desde feature/*, fix/*, refactor/*, docs/*, update/*, release/* o ci/bump-*"
+              exit 1
+            fi
+          fi
+          
+          if [[ "$BASE" == "master" ]]; then
+            [[ "$HEAD" == "develop"  ]] && { echo "✅ PR válida (develop → master)";  exit 0; }
+            [[ "$HEAD" =~ ^hotfix/   ]] && { echo "✅ PR válida (hotfix  → master)";  exit 0; }
+            [[ "$HEAD" =~ ^release/  ]] && { echo "✅ PR válida (release → master)";  exit 0; }
+            echo "::error::PRs a master sólo desde develop, hotfix/* o release/*"
+            exit 1
+          fi
+
+          echo "ℹ️  PR contra $BASE → sin validación específica"
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 2. Validar título de PR a master (sólo en pull_request)
+# ────────────────────────────────────────────────────────────────────────────────
+  master-pr-title:
+    if: github.event_name == 'pull_request'          # ← evita ejecuciones en push
+    runs-on: ubuntu-latest
+    steps:
+      - name: Saltar si la base no es master
+        if: github.base_ref != 'master'
+        run: echo "PR a ${GITHUB_BASE_REF}; check innecesario."
+
+      - name: Validar patrón del título
+        if: github.base_ref == 'master'
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr    = context.payload.pull_request;
+            const title = pr.title.trim();
+            const ok    = /^\[(RELEASE|HOTFIX)\]\s+.+$/i.test(title);
+
+            if (ok) { core.info('✅ Título válido'); return; }
+
+            const msg = [
+              '🚫 **Título inválido**',
+              '',
+              'Usa uno de estos formatos:',
+              '- `[RELEASE] <mensaje>`',
+              '- `[HOTFIX] <mensaje>`'
+            ].join('\n');
+
+            try {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo:  context.repo.repo,
+                issue_number: pr.number,
+                body: msg
+              });
+            } catch {/* sin permisos para comentar */}
+            core.setFailed('Título de PR inválido.');
+
+# ────────────────────────────────────────────────────────────────────────────────
+# 3. Lint de prefijo en mensajes de commit (push y PR)
+# ────────────────────────────────────────────────────────────────────────────────
+  commit-prefix:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Gate / calcular rango
+        id: gate
+        run: |
+          if [ "${{ github.event_name }}" = "pull_request" ]; then
+            RANGE="${{ github.event.pull_request.base.sha }}..${{ github.event.pull_request.head.sha }}"
+            BRANCH="${{ github.head_ref }}"
+          else
+            RANGE="${{ github.event.before }}..${{ github.sha }}"
+            BRANCH="${GITHUB_REF_NAME}"
+          fi
+
+          echo "range=$RANGE"   >> $GITHUB_OUTPUT
+          echo "branch=$BRANCH" >> $GITHUB_OUTPUT
+
+          if [[ "$BRANCH" =~ ^(master|develop|curso)$ \
+             || "$BRANCH" =~ ^(dependabot/|renovate/) \
+             || "$BRANCH" =~ ^ci/bump- ]]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Early success
+        if: steps.gate.outputs.skip == 'true'
+        run: echo "✅ Rama exenta. Nada que validar."
+
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+        with: { fetch-depth: 0 }
+
+      - name: Lint commits
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          RANGE="${{ steps.gate.outputs.range }}"
+
+          ALLOWED='^(data|extract|transform|load|preprocesamiento|modelo|cicd|docs|fix|refactor|test|config|chore):\s'
+          EXCEPT='^(Merge |Revert "|dependabot|renovate/|chore\(changelog\): added|chore\(changelog+version\): added|ci: bump|chore\(release\):)'
+
+          FAIL=0
+  
+          while IFS= read -r msg; do
+          if [[ "$msg" =~ $EXCEPT ]]; then
+              echo "ℹ️  Exento: $msg"
+              continue
+          fi
+          if [[ ! "$msg" =~ $ALLOWED ]]; then
+              echo "::error::Mensaje inválido: \"$msg\""
+              FAIL=1
+          fi
+          done < <(git log --format='%s' "$RANGE")
+  
+          exit $FAIL

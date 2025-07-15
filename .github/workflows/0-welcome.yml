@@ -3,13 +3,13 @@ name: Step 0, Welcome
 # This step triggers after the learner creates a new repository from the template.
 # This workflow updates from step 0 to step 1.
 
-# This will run every time we create push a commit to `main`.
+# This will run every time we create push a commit to `curso`.
 # Reference: https://docs.github.com/en/actions/learn-github-actions/events-that-trigger-workflows
 on:
   workflow_dispatch:
   push:
     branches:
-      - main
+      - curso
 
 # Reference: https://docs.github.com/en/actions/security-guides/automatic-token-authentication
 permissions:
@@ -24,6 +24,8 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+        with:
+          ref: curso
       - id: get_step
         run: |
           echo "current_step=$(cat ./.github/steps/-step.txt)" >> $GITHUB_OUTPUT
@@ -53,7 +55,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # Create a release-v1.0 branch.
+      # Create a develop branch.
       - name: Initialize repository
         run: ./.github/script/initialize-repository.sh
         env:
@@ -64,5 +66,6 @@ jobs:
         uses: skills/action-update-step@v2
         with:
           token: ${{ secrets.GITHUB_TOKEN }}
+          base_branch_name: curso
           from_step: 0
           to_step: 1

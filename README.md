@@ -9,61 +9,55 @@
   Add your open source license, GitHub uses the MIT license.
 -->
 
-# Create a release based workflow
-
-_Create a release based workflow that is built on the foundations of the GitHub flow._
-
 </header>
 
-<!--
-  <<< Author notes: Course start >>>
-  Include start button, a note about Actions minutes,
-  and tell the learner why they should take the course.
--->
+# Flujo de trabajo basado en **GitFlow** con rama _develop_ de integración adicional
 
-## Welcome
+Este repositorio contiene un curso que muestra de manera práctica cómo usar este flujo de trabajo, basado en [GitHub flow](https://guides.github.com/introduction/flow/), pero con una una rama adicional de integración de cambios **`develop`** intermedia a la rama **`master`**. Para ello haremos varios desarrollos sobre nuestro juego _Alien Invasion_.
 
-Create a release based workflow that is built on the foundations of the [GitHub flow](https://guides.github.com/introduction/flow/). When your team uses a release-based workflow, GitHub makes it easy to collaborate with deployable iterations of your project that you can package and make available for a wider audience to download and use.
+- **Qué aprenderás**:
+  - A seguir un flujo de trabajo apoyado en rama `develop` y basado en versiones.
+  - A trabajar en ramas `feature/*`, `fix/*`, `hotfix/*`, `refactor/*`, `docs/*` y `update/*` y fusionarlas en `develop` mediante *Pull Requests* (PR de ahora en adelante).
+  - A congelar código en tags, revisar y publicar versiones
+- **Qué construirás**: crearás *tags*, *releases* y notas de versión.
+- **Prerrequisitos**: si necesitas aprender sobre ramas, commits y pull requests, realiza primero el curso de [introducción a GitHub](https://github.com/skills/introduction-to-github).
+- **Duración**: menos de 1 hora.
 
-GitHub releases allow your team to package and provide software to your users based on a specific point in the history of your project.
+En este curso:
 
-- **Who is this for**: Developers, DevOps Engineers, IT Operations, managers, and teams.
-- **What you'll learn**: How to follow a release-based workflow.
-- **What you'll build**: You will create tags, releases, and release notes.
-- **Prerequisites**: If you need to learn about branches, commits, and pull requests, take [Introduction to GitHub](https://github.com/skills/introduction-to-github) first.
-- **How long**: This course takes less than 1 hour to complete.
+1. Protegerás las ramas críticas `master` y `develop`.
+1. Crearás una *release* inicial `v0.1.0` desde la rama *master*.
+1. Abrirás una *PR* para añadir nuevos cambios a la rama *develop* y luego a la rama *master*.
+1. Al mergear la PR de la rama *master* se generará la nueva *release* `v0.1.1`.
+1. Arreglarás un *bug* aplicando un *hotfix* que generará una *release* `v0.1.2` que incluye este *fix*.
 
-In this course, you will:
+## Requisitos
 
-1. Create a beta release
-2. Add a feature to a release
-3. Open a release pull request
-4. Add release notes and merge
-5. Finalize a release
-6. Commit a hotfix
-7. Create a hotfix release
+- Conocer los fundamentos de GitHub (ramas, commits, pull requests, markdown).
+- Acceso a un repositorio en GitHub con Actions habilitado.
 
-### How to start this course
+## Cómo usar este curso
 
 <!-- For start course, run in JavaScript:
 'https://github.com/new?' + new URLSearchParams({
-  template_owner: 'skills',
+  template_owner: 'ml0renz0',
   template_name: 'release-based-workflow',
   owner: '@me',
   name: 'skills-release-based-workflow',
-  description: 'My clone repository',
+  description: 'Release based workflow course',
   visibility: 'public',
 }).toString()
 -->
 
-[![start-course](https://user-images.githubusercontent.com/1221423/235727646-4a590299-ffe5-480d-8cd5-8194ea184546.svg)](https://github.com/new?template_owner=skills&template_name=release-based-workflow&owner=%40me&name=skills-release-based-workflow&description=My+clone+repository&visibility=public)
+[![Start course](https://user-images.githubusercontent.com/1221423/235727646-4a590299-ffe5-480d-8cd5-8194ea184546.svg)](https://github.com/new?template_owner=ml0renz0&template_name=release-based-workflow&owner=%40me&name=skills-release-based-workflow&description=Release+based+workflow+course&visibility=public&include_all_branches=true)
 
-1. Right-click **Start course** and open the link in a new tab.
-2. In the new tab, most of the prompts will automatically fill in for you.
-   - For owner, choose your personal account or an organization to host the repository.
-   - We recommend creating a public repository, as private repositories will [use Actions minutes](https://docs.github.com/en/billing/managing-billing-for-github-actions/about-billing-for-github-actions).
-   - Scroll down and click the **Create repository** button at the bottom of the form.
-3. After your new repository is created, wait about 20 seconds, then refresh the page. Follow the step-by-step instructions in the new repository's README.
+
+1. Haz clic con el botón derecho en **Start course** y abre el enlace en una pestaña nueva.
+1. En la pestaña recién abierta, la mayoría de los campos se rellenarán automáticamente.
+1. En owner, elige tu cuenta personal o la organización donde quieras alojar el repositorio.
+1. Te recomendamos crear un repositorio público, ya que los repositorios privados consumen minutos de Actions.
+1. Desplázate hasta el final del formulario y haz clic en Create repository.
+1. Cuando se cree tu nuevo repositorio, espera unos 20 segundos y actualiza la página. A continuación, sigue las instrucciones paso a paso que encontrarás en el README del nuevo repositorio.
 
 <footer>
 
@@ -71,11 +65,5 @@ In this course, you will:
   <<< Author notes: Footer >>>
   Add a link to get support, GitHub status page, code of conduct, license link.
 -->
-
----
-
-Get help: [Post in our discussion board](https://github.com/orgs/skills/discussions/categories/release-based-workflow) &bull; [Review the GitHub status page](https://www.githubstatus.com/)
-
-&copy; 2023 GitHub &bull; [Code of Conduct](https://www.contributor-covenant.org/version/2/1/code_of_conduct/code_of_conduct.md) &bull; [MIT License](https://gh.io/mit)
 
 </footer>

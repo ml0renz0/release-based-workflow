@@ -1,0 +1,386 @@
+name: "Versión: pre-release y release"
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+permissions:
+  contents: write
+  pull-requests: write
+  statuses: write
+
+concurrency:
+  group: version-bump
+  cancel-in-progress: false
+
+################################################################################
+# FUNCIONES COMUNES (reutilizadas en ambos jobs)
+################################################################################
+env:
+  # tiny bash helper to prepend release notes to CHANGELOG.md
+  PREPEND_CHANGELOG: |-
+    # Variables definidas en GITHUB_ENV más abajo
+    TAG="${TAG}"
+    PREV="${PREV:-$(git rev-list --max-parents=0 HEAD | tail -1)}"
+    DATE="$(date +'%Y-%m-%d')"
+    NOTES_FILE="RELEASE_NOTES.md"
+    cat << EOC > .CHANGELOG_FRAGMENT
+    ## ${TAG} - ${DATE}
+    
+    $(cat "$NOTES_FILE")
+    
+    ${TAG}: [compare: ${PREV} - ${TAG}](../../compare/${PREV}...${TAG})
+    EOC
+
+    [ -f CHANGELOG.md ] || touch CHANGELOG.md
+    cat .CHANGELOG_FRAGMENT CHANGELOG.md > .CHANGELOG_NEW
+    mv .CHANGELOG_NEW CHANGELOG.md
+jobs:
+  #################################################################################
+  #  JOB 1 ─────────────── Pre-release (PR cerrada → develop) ─────────────────────
+  #################################################################################
+  develop:
+    if: github.base_ref == 'develop'
+    runs-on: ubuntu-latest
+
+    steps:
+    # ── Gate ───────────────────────────────────────────────────────────────────
+      - name: Gate / skip?
+        id: gate
+        run: |
+          if [ "${{ github.event.action }}" != "closed" ] \
+             || [ "${{ github.event.pull_request.merged }}" != "true" ]; then
+            echo "skip=true"  >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Early success
+        if: steps.gate.outputs.skip == 'true'
+        run: echo "✅ No es una PR mergeada a develop. Nada que hacer."
+
+    # ── Lógica clásica bump develop ────────────────────────────────────────────
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+        with: { fetch-depth: 0 }
+
+      - name: Configure git user
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Detect bump type
+        if: steps.gate.outputs.skip != 'true'
+        id: bump
+        run: |
+          HEAD_REF="${{ github.event.pull_request.head.ref }}"
+          case "$HEAD_REF" in
+            fix/*|docs/*|update/*)  TYPE=patch ;;
+            feature/*|refactor/*)   TYPE=minor ;;
+            release/*)              TYPE=major ;;
+            *) echo "::error::Tipo de rama desconocido ($HEAD_REF)"; exit 1 ;;
+          esac
+          echo "type=$TYPE" >> "$GITHUB_OUTPUT"
+
+      - name: Compute next version
+        if: steps.gate.outputs.skip != 'true'
+        id: ver
+        run: |
+          set -e
+          RAW="0.0.0"
+          if [ -f VERSION ]; then RAW=$(tr -d '\r' < VERSION | sed 's/^v//' | sed 's/-dev$//'); fi
+          if [[ ! "$RAW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION inválido ($RAW)"
+            exit 1
+          fi
+
+          IFS=. read -r MA MI PA <<<"$RAW"
+          case "${{ steps.bump.outputs.type }}" in
+            major) MA=$((MA+1)); MI=0; PA=0 ;;
+            minor) MI=$((MI+1)); PA=0       ;;
+            patch) PA=$((PA+1))             ;;
+          esac
+
+          BASE="v${MA}.${MI}.${PA}"           # VERSION sin -dev
+          DEV_TAG="${BASE}-dev"               # Tag para develop
+
+          git fetch --tags --quiet
+
+          # Flags de idempotencia
+          DO_COMMIT=1
+          DO_TAG=1
+          DO_RELEASE=1
+
+          # ¿El fichero VERSION ya dice BASE?
+          if [ -f VERSION ] && [ "$(tr -d '\r' < VERSION)" = "$BASE" ]; then
+            DO_COMMIT=0
+          fi
+
+          # ¿Existe la rama ci/bump-BASE?
+          if git show-ref --verify --quiet "refs/heads/ci/bump-${BASE}"; then
+            DO_COMMIT=0
+          fi
+
+          # ¿Existe el tag y/o la release?
+          if git show-ref --tags --verify --quiet "refs/tags/$DEV_TAG"; then
+            DO_TAG=0
+          fi
+          if gh release view "$DEV_TAG" >/dev/null 2>&1; then
+            DO_RELEASE=0
+          fi
+
+          echo "base=$BASE"             >> $GITHUB_OUTPUT
+          echo "devtag=$DEV_TAG"        >> $GITHUB_OUTPUT
+          echo "do_commit=$DO_COMMIT"   >> $GITHUB_OUTPUT
+          echo "do_tag=$DO_TAG"         >> $GITHUB_OUTPUT
+          echo "do_release=$DO_RELEASE" >> $GITHUB_OUTPUT
+          echo "TAG=${DEV_TAG}"         >> $GITHUB_ENV
+
+      - name: Get previous develop tag
+        if: steps.gate.outputs.skip != 'true'
+        id: prev
+        run: |
+          git fetch --tags --quiet
+          PREV=$(git tag --list 'v[0-9]*-dev' --sort=-v:refname | head -1)
+          echo "Previous pre-release found: $PREV"
+          echo "prev=$PREV"   >> $GITHUB_OUTPUT
+          echo "PREV=${PREV}" >> $GITHUB_ENV
+
+      - name: Build pre-release notes
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          if [[ -n "${{ steps.prev.outputs.prev }}" ]]; then
+            BASE=$(git merge-base "${{ steps.prev.outputs.prev }}" HEAD)
+            echo "Previous common ancestor found: $BASE"
+            git log --no-merges --cherry-pick --right-only --pretty=format:'- %s' "$BASE"...HEAD \
+              | grep -vE '^- chore\(changelog' > RELEASE_NOTES.md
+          else
+            git log --no-merges --cherry-pick --right-only --pretty=format:'- %s' \
+              | grep -vE '^- chore\(changelog' > RELEASE_NOTES.md
+          fi
+
+      - name: Prepend pre-release notes to CHANGELOG
+        if: steps.gate.outputs.skip != 'true'
+        run: bash -euo pipefail -c "$PREPEND_CHANGELOG"
+
+      - name: Create bump branch and commit changelog & version
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_commit == '1'
+        run: |
+          set -e
+          echo "${{ steps.ver.outputs.base }}" > VERSION
+          BR="ci/bump-${{ steps.ver.outputs.devtag }}"
+          git switch -c "$BR"
+          git add VERSION CHANGELOG.md
+          git commit -m "chore(changelog+version): added version ${{ steps.ver.outputs.devtag }}"
+          git push -u origin "$BR"
+
+      - name: Merge bump branch
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_commit == '1'
+        uses: ./.github/actions/create-and-merge-pr
+        with:
+          token:  ${{ secrets.GITHUB_TOKEN }}
+          head:   ci/bump-${{ steps.ver.outputs.devtag }}
+          base:   develop
+          title:  "chore(changelog+version): added version ${{ steps.ver.outputs.base }}"
+          body:   "Tipo: ${{ steps.bump.outputs.type }}"
+          method: squash
+          auto:   "true"
+          checks: "commit-prefix branch-name master-pr-title"
+          delete: "true"
+
+      - name: Tag & prerelease
+        if: steps.gate.outputs.skip != 'true' && (steps.ver.outputs.do_tag == '1' || steps.ver.outputs.do_release == '1')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          DEV_TAG:  ${{ steps.ver.outputs.devtag }}
+        run: |
+          git fetch origin develop --tags
+          if ! git show-ref --tags --verify --quiet "refs/tags/$DEV_TAG"; then
+            git tag "$DEV_TAG"
+            git push origin "$DEV_TAG"
+          fi
+
+          if ! gh release view "$DEV_TAG" >/dev/null 2>&1; then
+            gh release create "$DEV_TAG" \
+              --prerelease \
+              --title "$DEV_TAG" \
+              --notes-file RELEASE_NOTES.md
+          fi
+  ################################################################################
+  #  JOB 2 ─────────────── Release final (PR cerrada → master) ───────────────────
+  ################################################################################
+  master:
+    if: github.base_ref == 'master'
+    runs-on: ubuntu-latest
+
+    steps:
+    # ── Gate ───────────────────────────────────────────────────────────────────
+      - name: Gate / skip?
+        id: gate
+        run: |
+          if [ "${{ github.event.action }}" != "closed" ] \
+             || [ "${{ github.event.pull_request.merged }}" != "true" ]; then
+            echo "skip=true" >> $GITHUB_OUTPUT
+          else
+            echo "skip=false" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Early success
+        if: steps.gate.outputs.skip == 'true'
+        run: echo "✅ No es una PR mergeada a master. Nada que hacer."
+
+    # ── Lógica clásica bump master ─────────────────────────────────────────────
+      - uses: actions/checkout@v4
+        if: steps.gate.outputs.skip != 'true'
+        with: { fetch-depth: 0 }
+
+      - name: Configure git user
+        if: steps.gate.outputs.skip != 'true'
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+
+      - name: Determine source type
+        if: steps.gate.outputs.skip != 'true'
+        id: kind
+        run: |
+          REF="${{ github.event.pull_request.head.ref }}"
+          case "$REF" in
+            develop)        SRC=develop ;;
+            release/*)      SRC=release ;;
+            hotfix/*)       SRC=hotfix  ;;
+            *) echo "::error::Origen no permitido ($REF)"; exit 1 ;;
+          esac
+          echo "src=$SRC" >> $GITHUB_OUTPUT
+
+      - name: Compute final version
+        if: steps.gate.outputs.skip != 'true'
+        id: ver
+        run: |
+          RAW=$(tr -d '\r' < VERSION | sed 's/^v//')
+          if ! [[ "$RAW" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            echo "::error::VERSION inválido: '$RAW'"
+            exit 1
+          fi
+
+          DO_TAG=1
+          DO_RELEASE=1
+          DO_SYNC=0
+          PR_MSG="nueva release"
+
+          IFS=. read -r MA MI PA <<<"$RAW"
+          case "${{ steps.kind.outputs.src }}" in
+            release) MA=$((MA+1)); MI=0; PA=0; DO_SYNC=1; PR_MSG="release/hotfix" ;;
+            hotfix)  PA=$((PA+1));             DO_SYNC=1; PR_MSG="release/hotfix" ;;
+          esac
+
+          FINAL="v${MA}.${MI}.${PA}"
+
+          git fetch --tags --quiet
+
+          if git show-ref --tags --verify --quiet "refs/tags/$FINAL"; then
+            DO_TAG=0
+          fi
+          if gh release view "$FINAL" >/dev/null 2>&1; then
+            DO_RELEASE=0
+          fi
+          
+          echo "final=$FINAL"           >> $GITHUB_OUTPUT
+          echo "do_tag=$DO_TAG"         >> $GITHUB_OUTPUT
+          echo "do_release=$DO_RELEASE" >> $GITHUB_OUTPUT
+          echo "do_sync=$DO_SYNC"       >> $GITHUB_OUTPUT
+          echo "pr_msg=$PR_MSG"         >> $GITHUB_OUTPUT
+          echo "TAG=${FINAL}"           >> $GITHUB_ENV
+
+      - name: Get previous release tag
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_release == '1'
+        id: prev
+        run: |
+          git fetch --tags --quiet
+          PREV=$(git tag --list 'v[0-9]*' --sort=-v:refname | grep -v '\-dev' | head -1)
+          echo "Previous release found: $PREV"
+          echo "prev=$PREV"   >> $GITHUB_OUTPUT
+          echo "PREV=${PREV}" >> $GITHUB_ENV
+
+      - name: Build release notes
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_release == '1'
+        run: |
+          if [[ -n "${{ steps.prev.outputs.prev }}" ]]; then
+            BASE=$(git merge-base "${{ steps.prev.outputs.prev }}" HEAD)
+            echo "Previous common ancestor found: $BASE"
+            git log --no-merges --cherry-pick --right-only --pretty=format:'- %s' "$BASE"...HEAD \
+              | grep -vE '^- chore\(changelog' > RELEASE_NOTES.md
+          else
+            git log --no-merges --cherry-pick --right-only --pretty=format:'- %s' \
+              | grep -vE '^- chore\(changelog' > RELEASE_NOTES.md
+          fi
+
+      - name: Prepend release notes to CHANGELOG
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_release == '1'
+        run: bash -euo pipefail -c "$PREPEND_CHANGELOG"
+
+      - name: Create bump branch and commit changelog (& version)
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_release  == '1'
+        id: bump_branch
+        run: |
+          set -e
+          echo "${{ steps.ver.outputs.final }}" > VERSION
+          BR="ci/bump-${{ steps.ver.outputs.final }}"
+          git switch -c "$BR"
+          MSG="chore(changelog): added version ${{ steps.ver.outputs.final }}"
+          # only update VERSION if release/hotfix branch -> master
+          if [[ ${{ steps.ver.outputs.do_sync }} == '1' ]]; then
+            git add VERSION
+            MSG="chore(changelog+version): added version ${{ steps.ver.outputs.final }}"
+          fi
+          git add CHANGELOG.md
+          git commit -m "$MSG"
+          git push -u origin "$BR"
+          echo "msg=$MSG" >> "$GITHUB_OUTPUT"
+
+      - name: Merge bump branch
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_release == '1'
+        uses: ./.github/actions/create-and-merge-pr
+        with:
+          token:  ${{ secrets.GITHUB_TOKEN }}
+          head:   ci/bump-${{ steps.ver.outputs.final }}
+          base:   master
+          title:  "${{ steps.bump_branch.outputs.msg }}"
+          body:   "Tipo: ${{ steps.kind.outputs.src }}"
+          method: merge
+          auto:   "true"
+          checks: "commit-prefix branch-name master-pr-title"
+          delete: "true"
+
+      - name: Tag & release
+        if: steps.gate.outputs.skip != 'true' && (steps.ver.outputs.do_tag == '1' || steps.ver.outputs.do_release == '1')
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          FINAL:    ${{ steps.ver.outputs.final }}
+        run: |
+          git fetch origin --tags
+          if ! git show-ref --tags --verify --quiet "refs/tags/$FINAL"; then
+            git tag "$FINAL"
+            git push origin "$FINAL"
+          fi
+
+          if ! gh release view "$FINAL" >/dev/null 2>&1; then
+            gh release create "$FINAL" \
+              --title "$FINAL" \
+              --notes-file RELEASE_NOTES.md
+          fi
+
+      - name: Sync master → develop
+        if: steps.gate.outputs.skip != 'true' && steps.ver.outputs.do_release == '1'
+        uses: ./.github/actions/create-and-merge-pr
+        with:
+          token:  ${{ secrets.GITHUB_TOKEN }}
+          head:   master
+          base:   develop
+          title:  "[SYNC] master → develop (${{ steps.kind.outputs.src }})"
+          body:   "Sincronización automática tras ${{ steps.ver.outputs.pr_msg }}"
+          method: merge
+          auto:   "true"
+          checks: "commit-prefix branch-name"
+          delete: "true"

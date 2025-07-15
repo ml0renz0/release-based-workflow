@@ -1,0 +1,98 @@
+name: "Open & merge PR"
+description: "Crea una PR head→base y la mergea; opcionalmente borra HEAD."
+inputs:
+  token:
+    description: GITHUB_TOKEN o PAT con permisos repo
+    required: true
+  head:
+    description: Rama origen (HEAD)
+    required: true
+  base:
+    description: Rama destino (BASE)
+    required: true
+  title:
+    description: Título de la PR
+    required: true
+  body:
+    description: Cuerpo de la PR
+    required: false
+    default: ""
+  method:
+    description: "Método de merge: merge | squash | rebase"
+    required: false
+    default: merge
+  auto:
+    description: Use auto-merge?
+    required: false
+    default: "true"
+  checks:
+    description: Define checks to be set to true on auto-merge PR
+    required: true
+    default: ""
+  delete:
+    description: "Borra la rama HEAD tras el merge (solo si auto='false')"
+    required: false
+    default: "false"
+
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        REPO: ${{ github.repository }}
+        CHECKS: ${{ inputs.checks }}
+      run: |
+        set -euo pipefail
+
+        HEAD="${{ inputs.head }}"
+        BASE="${{ inputs.base }}"
+        TITLE="${{ inputs.title }}"
+        BODY="${{ inputs.body }}"
+        METHOD="${{ inputs.method }}"
+        AUTO="${{ inputs.auto }}"
+        DELETE_BRANCH="${{ inputs.delete }}"
+
+        # 1. Crear/obtener la PR
+        PR=$(gh pr list --head "$HEAD" --base "$BASE" --json number -q '.[0].number')
+        if [ -z "$PR" ]; then
+          gh pr create --title "$TITLE" --body "$BODY" --head "$HEAD" --base "$BASE" --draft=false
+          PR=$(gh pr list --head "$HEAD" --base "$BASE" --json number -q '.[0].number')
+        fi
+        echo "ℹ️  PR #$PR ($HEAD → $BASE)"
+
+        # 2. Marcar checks requeridos como success (si no van a ejecutarse)
+        SHA=$(gh pr view "$PR" --json headRefOid -q .headRefOid)
+        for ctx in $CHECKS; do
+          gh api repos/$REPO/statuses/$SHA \
+            -f state=success \
+            -f context="$ctx" \
+            -f description="Skipped for ci/bump-* auto PR" >/dev/null
+        done
+
+        # 3. Merge (auto o inmediato)
+        if [[ "$AUTO" == "true" ]]; then
+          gh pr merge "$PR" --"$METHOD" --auto
+          echo "⏳ Esperando a que GitHub complete el auto-merge…"
+          for i in {1..24}; do   # ~2 min (24×5 s)
+            sleep 5
+            state=$(gh pr view "$PR" --json state -q .state)
+            [[ "$state" == "MERGED" ]] && { echo "🟢 PR fusionada"; break; }
+          done
+        else
+          extra=""
+          if [[ "$DELETE_BRANCH" == "true" ]]; then extra="--delete-branch"; fi
+          gh pr merge "$PR" --"$METHOD" --admin "$extra"
+        fi
+
+        # 4. Borrar rama HEAD si se pidió y no se pudo en el merge anterior
+        if [[ "$DELETE_BRANCH" == "true" ]]; then
+          state=$(gh pr view "$PR" --json state -q .state)
+          if [[ "$state" == "MERGED" ]]; then
+            echo "🗑  Eliminando rama $HEAD…"
+            gh api -X DELETE "repos/$REPO/git/refs/heads/$HEAD" || \
+              echo "⚠️  No se pudo eliminar $HEAD (quizá ya no existe)."
+          else
+            echo "⚠️  PR aún sin fusionar; no se elimina la rama."
+          fi
+        fi
