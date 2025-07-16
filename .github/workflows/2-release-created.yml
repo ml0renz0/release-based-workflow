@@ -1,0 +1,93 @@
+name: Step 2, Release created (with bug)
+# This step triggers after 1-branches-protected.yml.
+# This workflow updates from step 2 to step 3.
+
+on:
+  push:
+    branches: [master]
+    paths:
+      - 'engine.js'
+      - 'game.js'
+
+permissions:
+  contents: write
+
+jobs:
+    # Get the current step to only run the main job when the learner is on the same step.
+  get_current_step:
+    name: Check current step number
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: curso
+      - id: get_step
+        run: |
+          echo "current_step=$(cat ./.github/steps/-step.txt)" >> $GITHUB_OUTPUT
+    outputs:
+      current_step: ${{ steps.get_step.outputs.current_step }}
+
+  check_release:
+    name: Validate release v0.1.0 existence
+    needs: get_current_step
+    if: >-
+      ${{ !github.event.repository.is_template
+          && needs.get_current_step.outputs.current_step == 2 }}
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Esperar a que exista la pre-release v0.1.0 (máx 5 min)
+        id: wait_release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: v0.1.0
+          MAX_TRIES: 12          # 12 × 15 s = 3 minutes
+          SLEEP: 15
+        run: |
+          i=0
+          while [ $i -lt "$MAX_TRIES" ]; do
+            if gh release view "$TAG" --json tagName >/dev/null 2>&1; then
+              echo "found=true" >>"$GITHUB_OUTPUT"
+              echo "✅ Release $TAG detectada en $((i*SLEEP)) s"
+              exit 0
+            fi
+            echo "⏳ Intento $((i+1))/$MAX_TRIES – release aún no existe, esperando ${SLEEP}s…"
+            sleep "$SLEEP"
+            i=$((i+1))
+          done
+
+          echo "::error::No se encontró la release $TAG tras $((MAX_TRIES*SLEEP)) s"
+          echo "found=false" >>"$GITHUB_OUTPUT"
+          exit 1
+    outputs:
+      found: ${{ steps.wait_release.outputs.found }}
+
+  on_release_created:
+    name: On release v0.1.0 created
+    runs-on: ubuntu-latest
+    needs: check_release
+
+    # We will only run this action when:
+    # 1. This repository isn't the template repository.
+    # 2. The step is currently 2.
+    # 3. Release v0.1.0 is published.
+    # Reference: https://docs.github.com/en/actions/learn-github-actions/contexts
+    # Reference: https://docs.github.com/en/actions/learn-github-actions/expressions
+    if: ${{ needs.check_release.outputs.found == 'true' }}
+
+    steps:
+      # We'll need to check out the repository so that we can edit the README.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          
+      # Update README to from step 2 to step 3.
+      - name: Avanzar README al paso 3
+        uses: skills/action-update-step@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base_branch_name: curso
+          from_step: 2
+          to_step: 3
