@@ -1,0 +1,150 @@
+name: Step 1, Master & develop branches protected
+# This step triggers manually after 0-welcome.yml.
+# This workflow updates from step 1 to step 2.
+
+on: workflow_dispatch
+
+# Reference: https://docs.github.com/en/actions/security-guides/automatic-token-authentication
+permissions:
+  contents: write
+
+jobs:
+  # Get the current step to only run the main job when the learner is on the same step.
+  get_current_step:
+    name: Check current step number
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          ref: curso
+      - id: get_step
+        run: |
+          echo "current_step=$(cat ./.github/steps/-step.txt)" >> $GITHUB_OUTPUT
+    outputs:
+      current_step: ${{ steps.get_step.outputs.current_step }}
+  branches_protected:
+    name: Check critical branches protected
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    steps:
+      - name: Clonar repo
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0     # necesitamos toda la historia para resetear
+
+      - name: Guardar commit HEAD actuales
+        id: refs
+        run: |
+          MASTER_SHA=$(git rev-parse origin/master)
+          DEV_SHA=$(git rev-parse origin/develop || echo "")
+          echo "master_sha=$MASTER_SHA" >> $GITHUB_OUTPUT
+          echo "dev_sha=$DEV_SHA"   >> $GITHUB_OUTPUT
+          echo "Set committer details"
+          git config user.name github-actions[bot]
+          git config user.email github-actions[bot]@users.noreply.github.com
+
+      # ---- Probar push a master ------------------------------
+      - name: Cambiar a master
+        if: steps.refs.outputs.master_sha != ''
+        run: git switch -c feature/check-master-protection origin/master
+
+      - name: Crear commit temporal en master
+        if: steps.refs.outputs.master_sha != ''
+        run: |
+          echo "$(date)" > .tmp_protection_check
+          git add .tmp_protection_check
+          git commit -m "chore: tmp protection check"
+
+      # ---- Probar push a master ---------------------------------
+      - name: Push a master
+        if: steps.refs.outputs.master_sha != ''
+        id: push_master
+        run: |
+          set +e
+          git push origin HEAD:master
+          echo "exitcode=$?" >> $GITHUB_OUTPUT
+
+      - name: Restaurar master si fue contaminado
+        if: steps.refs.outputs.master_sha != '' && steps.push_master.outputs.exitcode == '0'
+        run: |
+          git push --force origin ${{ steps.refs.outputs.master_sha }}:master
+
+      # ---- Probar push a develop ------------------------------
+      - name: Cambiar a develop
+        if: steps.refs.outputs.dev_sha != ''
+        run: git switch -c feature/check-develop-protection origin/develop
+
+      - name: Crear commit temporal en develop
+        if: steps.refs.outputs.dev_sha != ''
+        run: |
+          echo "$(date)" > .tmp_protection_check
+          git add .tmp_protection_check
+          git commit -m "chore: tmp protection check"
+
+      - name: Push a develop
+        if: steps.refs.outputs.dev_sha != ''
+        id: push_develop
+        run: |
+          set +e
+          git push origin HEAD:develop
+          echo "exitcode=$?" >> $GITHUB_OUTPUT
+
+      - name: Restaurar develop si fue contaminado
+        if: steps.refs.outputs.dev_sha != '' && steps.push_develop.outputs.exitcode == '0'
+        run: |
+          git push --force origin ${{ steps.refs.outputs.dev_sha }}:develop
+
+      # ---- Evaluación final -----------------------------------
+      - name: Evaluar resultados
+        run: |
+          FAIL=0
+          if [ -n "${{ steps.refs.outputs.master_sha }}" ] && [ "${{ steps.push_master.outputs.exitcode }}" = "0" ]; then
+            echo "::error::master NO está protegida."
+            FAIL=1
+          fi
+          if [ -n "${{ steps.refs.outputs.dev_sha }}" ] && [ "${{ steps.push_develop.outputs.exitcode }}" = "0" ]; then
+            echo "::error::develop NO está protegida."
+            FAIL=1
+          fi
+
+          if [ "$FAIL" = "0" ]; then
+            echo "✅ master y develop rechazan pushes directos. Protección activa."
+          else
+            exit 1
+          fi
+    
+  on_branches_protected:
+    name: On branches protected
+    needs: [get_current_step, branches_protected]
+
+    # We will only run this action when:
+    # 1. This repository isn't the template repository.
+    # 2. The step is currently 1.
+    # 3. The `master` & `develop` branches are protected.
+    # Reference: https://docs.github.com/en/actions/learn-github-actions/contexts
+    # Reference: https://docs.github.com/en/actions/learn-github-actions/expressions
+    if: >-
+      ${{ !github.event.repository.is_template
+          && needs.get_current_step.outputs.current_step == 1
+          && needs.branches_protected.result == 'success' }}
+
+    # We'll run Ubuntu for performance instead of Mac or Windows.
+    runs-on: ubuntu-latest
+
+    steps:
+      # We'll need to check out the repository so that we can edit the README.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Update README to from step 1 to step 2.
+      - name: Update to step 2
+        uses: skills/action-update-step@v2
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          base_branch_name: curso
+          from_step: 1
+          to_step: 2
