@@ -1,0 +1,114 @@
+name: Update course step via PR
+description: Commit step files, open PR, merge and delete branch.
+author: GitHub Skills (mod by Marcos Lorenzo)
+inputs:
+  token:
+    description: Token con permisos contents:write y pull-requests:write (GITHUB_TOKEN)
+    required: true
+  from_step:
+    required: true
+    description: Número de paso actual
+  to_step:
+    required: true
+    description: Número de paso siguiente
+runs:
+  using: composite
+  steps:
+    - name: Configure git
+      shell: bash
+      run: |
+        git config --global user.name github-actions[bot]
+        git config --global user.email github-actions[bot]@users.noreply.github.com
+
+    - name: Create branch and update step files
+      id: update
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.token }}
+        FROM_STEP: ${{ inputs.from_step }}
+        TO_STEP:   ${{ inputs.to_step }}
+        DEVELOP_BRANCH_NAME: develop
+      run: |
+        BRANCH=feature/"update-step-${TO_STEP}-$(date +%s)"
+        echo "Check that all required env variables are set"
+        if [ -z "$TO_STEP" ]
+        then
+          echo "TO_STEP is unset or set to the empty string"
+          exit 1
+        fi
+        if [ -z "$FROM_STEP" ]
+        then
+          echo "FROM_STEP is unset or set to the empty string"
+          exit 1
+        fi
+        if [ -z "$GITHUB_TOKEN" ]
+        then
+          echo "GITHUB_TOKEN is unset or set to the empty string"
+          exit 1
+        fi
+
+        echo "Make sure we are on the develop branch ($DEVELOP_BRANCH_NAME)"
+        git checkout $DEVELOP_BRANCH_NAME
+
+        echo "Check that we are on FROM_STEP"
+        if [ "$(cat .github/steps/-step.txt)" != $FROM_STEP ]
+        then
+          echo "Current step is not $FROM_STEP"
+          exit 0
+        fi
+
+        echo "Update the step to TO_STEP"
+        git switch -c "$BRANCH"
+        NEXT_STEP=$(cat .github/steps/[$TO_STEP]-*.md)
+        HEADER=$(awk '/<header>/,/<\/header>/' README.md)
+        FOOTER=$(awk '/<footer>/,/<\/footer>/' README.md)
+        echo -e "$HEADER\n\n$NEXT_STEP\n\n$FOOTER" > README.md
+        echo "${TO_STEP}" > .github/steps/-step.txt
+        git add README.md .github/steps/-step.txt
+        git commit -m "docs: Update to ${TO_STEP} in STEP and README.md"
+        echo "branch=$BRANCH" >> "$GITHUB_OUTPUT"
+
+    - name: Upload branch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+      run: |
+        git push -u origin "${{ steps.update.outputs.branch }}"
+
+    - name: Create PR to develop branch, merge and delete temporary branch
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        DEVELOP_BRANCH_NAME: develop
+      run: |
+        TITLE="Update to step ${{ inputs.to_step }}"
+        BODY="Automated update from step ${{ inputs.from_step }} to ${{ inputs.to_step }}."
+        gh pr create \
+          --title "$TITLE" \
+          --body  "$BODY" \
+          --head  "${{ steps.update.outputs.branch }}" \
+          --base  "$DEVELOP_BRANCH_NAME" \
+          --draft=false \
+          || true
+        PR_NUMBER=$(gh pr list --head "${{ steps.update.outputs.branch }}" --base "$DEVELOP_BRANCH_NAME" --json number -q '.[0].number')
+        gh pr merge "$PR_NUMBER" --squash --delete-branch --admin
+
+    - name: Create PR from develop to default branch and merge
+      shell: bash
+      env:
+        GH_TOKEN: ${{ inputs.token }}
+        DEFAULT_BRANCH_NAME: "main"
+        DEVELOP_BRANCH_NAME: develop
+      run: |
+        TITLE="Sync develop into main - step ${{ inputs.to_step }}"
+        BODY="Automated fast-forward from develop to main after step update."
+
+        gh pr create \
+          --title "$TITLE" \
+          --body  "$BODY" \
+          --head  "$DEVELOP_BRANCH_NAME" \
+          --base  "$DEFAULT_BRANCH_NAME" \
+          --draft=false \
+          || true
+        PR_NUMBER=$(gh pr list --head "$DEVELOP_BRANCH_NAME" --base "$DEFAULT_BRANCH_NAME" --json number -q '.[0].number')
+        gh pr merge "$PR_NUMBER" --merge --admin
