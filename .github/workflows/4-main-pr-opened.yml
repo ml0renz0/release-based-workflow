@@ -1,0 +1,100 @@
+name: Step 4, Main pull request opened
+
+# This step triggers after 3-feature-added-to-develop.yml.
+# This workflow updates from step 4 to step 5.
+
+# This will run every time a pull request is opened to main.
+# Reference: https://docs.github.com/en/actions/learn-github-actions/events-that-trigger-workflows
+on:
+  workflow_dispatch:
+  pull_request:
+    types: [opened]
+    branches: [main]
+
+permissions:
+  contents: write
+
+jobs:
+  # Get the current step to only run the main job when the learner is on the same step.
+  get_current_step:
+    name: Check current step number
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+      - id: get_step
+        run: |
+          echo "current_step=$(cat ./.github/steps/-step.txt)" >> $GITHUB_OUTPUT
+    outputs:
+      current_step: ${{ steps.get_step.outputs.current_step }}
+
+  check_main_pr_title:
+    runs-on: ubuntu-latest
+    permissions:
+      pull-requests: write   # para poder fallar el check y dejar comentarios (opcional)
+
+    steps:
+      - name: Comprobar patrón del título de la PR
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const { github, context, core } = require('@actions/github');
+
+            // ------------------ Datos básicos ------------------
+            const pr       = context.payload.pull_request;
+            const title    = pr.title.trim();
+            const prNumber = pr.number;
+
+            // ------------------ Expresión SemVer ---------------
+            // major.minor.patch[-prerelease][+build]
+            const semver = '(\\d+\\.\\d+\\.\\d+' +
+                           '(?:-[0-9A-Za-z.-]+)?' +
+                           '(?:\\+[0-9A-Za-z.-]+)?' +
+                           ')';
+
+            // Patrón completo: [RELEASE] - <semver>#<semver>
+            const regex = new RegExp(`^\\[RELEASE\\]\\s*-\\s*${semver}#${semver}$`);
+
+            if (regex.test(title)) {
+              core.info(`✅ El título cumple el patrón: "${title}"`);
+            } else {
+              core.setFailed(
+                `❌ El título de la PR no cumple el patrón "[RELEASE] - <old_version>#<new_version>".\n` +
+                `Ejemplo válido: "[RELEASE] - 0.9.0#1.0.0"`,
+              )
+            }
+
+  on_main_pr_opened:
+    name: On release pull request opened
+    needs: [get_current_step, check_main_pr_title]
+
+    # We will only run this action when:
+    # 1. This repository isn't the template repository.
+    # 2. The step is currently 4.
+    # 3. The pull request head branch is 'develop'.
+    # 4. The PR title follows the pattern `[RELEASE] - <old_version>#<new_version>`.
+    # Reference: https://docs.github.com/en/actions/learn-github-actions/contexts
+    # Reference: https://docs.github.com/en/actions/learn-github-actions/expressions
+    if: >-
+      ${{ !github.event.repository.is_template
+          && needs.get_current_step.outputs.current_step == 4
+          && github.head_ref == 'develop'
+          && needs.check_main_pr_title.result == 'success' }}
+
+    # We'll run Ubuntu for performance instead of Mac or Windows.
+    runs-on: ubuntu-latest
+
+    steps:
+      # We'll need to check out the repository so that we can edit the README.
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      # Update README from step 4 to step 5.
+      - name: Update to step 5
+        uses: ./.github/actions/action-update-step-via-pr
+        with:
+          token: ${{ secrets.GITHUB_TOKEN }}
+          from_step: 4
+          to_step: 5
